@@ -1,0 +1,86 @@
+{
+  "name": "interleaved-study",
+  "productName": "Interleaved Study",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Interleaved practice with spaced repetition for lesson documents",
+  "author": "Mohammad",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "prebuild": "node scripts/setup-markitdown.mjs",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "mock-ai": "node scripts/mock-ai-server.mjs",
+    "setup:markitdown": "node scripts/setup-markitdown.mjs",
+    "postinstall": "electron-builder install-app-deps",
+    "dist": "npm run build && electron-builder --mac dir --arm64"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "better-sqlite3": "^11.10.0",
+    "mammoth": "^1.8.0",
+    "pdfjs-dist": "4.10.38",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@fontsource/newsreader": "^5.1.0",
+    "@fontsource/schibsted-grotesk": "^5.1.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.16.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.9"
+  },
+  "build": {
+    "appId": "local.interleaved.study",
+    "productName": "Interleaved Study",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/markitdown",
+        "to": "markitdown",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "npmRebuild": true,
+    "mac": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.education",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    }
+  }
+}

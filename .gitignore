@@ -1,0 +1,12 @@
+node_modules
+out
+dist
+*.log
+.DS_Store
+coverage
+.env
+.env.*
+*.sqlite
+*.sqlite-*
+api-key.bin
+vendor
