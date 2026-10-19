@@ -1,11 +1,12 @@
 // Domain operations on top of the thin Store: courses, lessons, topics (with text kept separately),
 // history carry-over, reviews, overrides, daily stats, snapshots, organize-job creation and estimates.
 import crypto from 'crypto'
+import path from 'path'
 import type {
   Course, DataSnapshot, Daily, Deadline, Doc, Estimate, Job, JobKind, OverrideAction, Para, Settings, Snapshot, Topic
 } from '../shared/types'
 import { applyReview, markSolid, mastery, resetSched, setDue, status, type ReviewInput } from '../shared/sched'
-import { addTime, clamp, dayKey, suggestedMinutes, wordCount } from '../shared/util'
+import { addTime, clamp, courseCode, dayKey, suggestedMinutes, wordCount } from '../shared/util'
 import { DEFAULT_REQUEST_MS } from '../shared/defaults'
 import type { Store } from './store/types'
 import { buildWindows, estTokens, firstSentenceName, provisionalTopics, safeName, sliceText } from './preprocess'
@@ -30,6 +31,36 @@ export class Repo {
     const c: Course = { id: uid(), name: clean, color: count % 8, createdAt: this.now() }
     this.store.put('courses', c)
     return c
+  }
+
+  /** A course the student names themselves (the New course flow); unlike ensureCourse, a taken name is an error. */
+  createCourse(name: string): Course {
+    const clean = name.trim()
+    if (!clean) throw new Error('Give the course a name.')
+    if (this.store.all<Course>('courses').some((c) => c.name.toLowerCase() === clean.toLowerCase())) {
+      throw new Error(`There is already a course called "${clean}".`)
+    }
+    return this.ensureCourse(clean)
+  }
+
+  /**
+   * One-time fix for courses named after the import folder ("Transcriptions"): when every lesson came from that
+   * folder and the file names share one course code, rename the course to the code.
+   */
+  nameCoursesByCode(): void {
+    if (this.store.kvGet<boolean>('coursesNamedByCode')) return
+    this.store.kvSet('coursesNamedByCode', true) // first, so a bad record can't make this rerun on every launch
+    // Records may come from an old version or an imported backup: skip anything not shaped as expected.
+    const courses = this.store.all<Course>('courses').filter((c) => typeof c?.id === 'string' && typeof c.name === 'string')
+    for (const c of courses) {
+      const docs = this.store.byParent<Doc>('docs', c.id).filter((d) => typeof d?.path === 'string' && d.path && typeof d.fileName === 'string')
+      if (!docs.length || !docs.every((d) => path.basename(path.dirname(d.path)) === c.name)) continue
+      const found = docs.map((d) => courseCode(d.fileName)).filter((x): x is string => !!x)
+      const code = found[0]
+      if (!code || found.some((x) => x !== code) || found.length * 2 < docs.length) continue
+      if (courses.some((o) => o.name.toLowerCase() === code.toLowerCase())) continue
+      this.store.put('courses', { ...c, name: code })
+    }
   }
 
   renameCourse(id: string, name: string): void {

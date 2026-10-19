@@ -79,3 +79,17 @@ export function suggestedMinutes(words: number, difficulty?: number | null, pace
 export function normName(s: string): string {
   return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 }
+
+// Words that look like a course-code prefix in a file name but are not one ("Week 101", "Oct 2026").
+const NOT_CODES = new Set([
+  'WEEK', 'UNIT', 'PART', 'LEC', 'LECT', 'CHAP', 'CH', 'DAY', 'QUIZ', 'TEST', 'EXAM', 'LAB', 'PAGE', 'SEC', 'MOD', 'SET', 'REV',
+  'TERM', 'YEAR', 'ROOM', 'NOTE', 'NOTES', 'HW', 'PS', 'FALL', 'WINTER', 'SPRING', 'JAN', 'FEB', 'MAR', 'MARCH', 'APR', 'APRIL',
+  'MAY', 'JUN', 'JUNE', 'JUL', 'JULY', 'AUG', 'SEP', 'SEPT', 'OCT', 'NOV', 'DEC'
+])
+
+/** The course code a file name starts with ("CHM110 - Oct 9" → "CHM110", "bio 201_notes" → "BIO201"), else null. */
+export function courseCode(fileName: string): string | null {
+  const m = fileName.trim().match(/^([A-Za-z]{2,5})[\s_-]?(\d{3,4}(?:[A-Za-z]\d?)?)(?![A-Za-z0-9])/)
+  if (!m || NOT_CODES.has(m[1].toUpperCase())) return null
+  return `${m[1]}${m[2]}`.toUpperCase()
+}

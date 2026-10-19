@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { Caps, Provider, TestResult } from '../../../shared/types'
 import { DEFAULT_BASE_URLS, MODEL_PRESETS, PROVIDERS, SOUNDS, providerInfo } from '../../../shared/defaults'
-import { api } from '../api'
+import { api, errMsg } from '../api'
 import { useAction, useApp } from '../state'
 import { Icon } from '../icons'
 import { Spinner } from '../ui'
@@ -12,7 +12,8 @@ function NumField({ label, value, onSave, min = 0, max, step = 1, suffix }: { la
   const [v, setV] = useState(String(value))
   useEffect(() => setV(String(value)), [value])
   const commit = (): void => {
-    const n = Number(v)
+    // An empty or non-numeric entry is not a value: revert to what is stored and save nothing.
+    const n = v.trim() === '' ? NaN : Number(v)
     if (!Number.isFinite(n)) { setV(String(value)); return }
     const c = Math.max(min, max !== undefined ? Math.min(max, n) : n)
     if (c !== value) onSave(c)
@@ -40,10 +41,15 @@ function TextField({ label, value, placeholder, onSave }: { label: string; value
 }
 
 /** Advanced: point a provider at a proxy or the local mock server. Blank means the official endpoint. */
-function BaseUrlField({ value, fallback, onSave }: { value: string; fallback: string; onSave: (v: string) => void }) {
+function BaseUrlField({ value, fallback, onSave }: { value: string; fallback: string; onSave: (v: string) => Promise<boolean> }) {
   const [v, setV] = useState(value)
   useEffect(() => setV(value), [value])
-  const commit = (): void => { const t = v.trim().replace(/\/$/, ''); if (t !== value) onSave(t) }
+  const commit = (): void => {
+    const t = v.trim().replace(/\/$/, '')
+    if (t === value) { setV(value); return }
+    // A rejected or cancelled save leaves the stored value as it was, so show that again.
+    void onSave(t).then((ok) => { if (!ok) setV(value) })
+  }
   return (
     <label className="field" style={{ marginTop: 10, maxWidth: 420 }}><span>Base URL (advanced)</span>
       <input className="input" value={v} placeholder={fallback} onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} aria-label="Base URL" />
@@ -79,7 +85,7 @@ export function SettingsView() {
       if (model.trim() !== ai.model) await saveSettings({ ai: { model: model.trim() } })
       setTest(await api.testModel(model.trim()))
       await refreshBoot()
-    } catch (e) { toast(String(e), true) } finally { setTesting(false) }
+    } catch (e) { toast(errMsg(e), true) } finally { setTesting(false) }
   }
 
   /** Save a model right away: picking a preset applies it, a typed ID applies on Enter or when leaving the field. */
@@ -152,7 +158,7 @@ export function SettingsView() {
               {test.notes.map((n) => <p key={n} className="help">{n}</p>)}
             </div>
           )}
-          {mc && <p className="help">Recorded for {ai.model}: endpoint {mc.api}, system instruction {yn(mc.system)}, JSON mode {yn(mc.json)}, {thinkLabel.toLowerCase()} {yn(mc.thinkMinimal)}{ai.provider === 'anthropic' ? `, refusal fallback ${yn(mc.fallback)}` : ''}{mc.testedAt ? `, tested ${new Date(mc.testedAt).toLocaleString()}` : ''}.</p>}
+          {mc && <p className="help">Recorded for {ai.model}: endpoint {mc.api}, system instruction {yn(mc.system)}, JSON mode {yn(mc.json)}, {thinkLabel.toLowerCase()} {yn(mc.thinkMinimal)}{ai.provider === 'gemini' && mc.thinkLevel === 'low' ? ' (level low used)' : ''}{ai.provider === 'gemini' ? `, structured output ${yn(mc.schema)}` : ''}{ai.provider === 'anthropic' ? `, refusal fallback ${yn(mc.fallback)}` : ''}{mc.testedAt ? `, tested ${new Date(mc.testedAt).toLocaleString()}` : ''}.</p>}
           <div className="grid2" style={{ marginTop: 8 }}>
             {ai.provider === 'gemini' && (
               <label className="field"><span>Endpoint</span>
@@ -165,7 +171,7 @@ export function SettingsView() {
             )}
             <label className="check" style={{ alignSelf: 'end' }}><input type="checkbox" checked={ai.minimalThinking} onChange={(e) => void saveSettings({ ai: { minimalThinking: e.target.checked } })} /><span>Ask for {thinkLabel.toLowerCase()} (fewer output tokens; dropped automatically if the model refuses it)</span></label>
           </div>
-          <BaseUrlField key={ai.provider} value={ai.baseUrls[ai.provider] ?? ''} fallback={DEFAULT_BASE_URLS[ai.provider]} onSave={(v) => void saveSettings({ ai: { baseUrls: { [ai.provider]: v } } })} />
+          <BaseUrlField key={ai.provider} value={ai.baseUrls[ai.provider] ?? ''} fallback={DEFAULT_BASE_URLS[ai.provider]} onSave={async (v) => (await act(async () => { await saveSettings({ ai: { baseUrls: { [ai.provider]: v } } }); return true })) === true} />
         </section>
 
         <section className="block">

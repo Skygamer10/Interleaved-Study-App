@@ -79,12 +79,30 @@ export function mergeSettings(stored: unknown): Settings {
     if (!('gemini' in storedUrls) && legacy.baseUrl) out.ai.baseUrls.gemini = legacy.baseUrl
     delete legacy.baseUrl
   }
+  // Stored or restored addresses that fail the safety check fall back to the official endpoint.
+  for (const [p, u] of Object.entries(out.ai.baseUrls)) if (typeof u !== 'string' || baseUrlProblem(u)) out.ai.baseUrls[p as Provider] = DEFAULT_BASE_URLS[p as Provider] ?? ''
   // Client-side rate limits were removed: the provider's own limit now pauses the queue instead.
   for (const k of ['rpm', 'tpm', 'rpd', 'utilization', 'countInputOnly']) delete (out.ai as unknown as Record<string, unknown>)[k]
   return out
 }
 
-/** The base URL for a provider; a blank override falls back to the official endpoint. */
+/**
+ * Why a base URL can't receive an API key, or null when it can (blank means the official endpoint).
+ * https only (http just for this machine), and no user name, query or fragment that could hide the real host.
+ */
+export function baseUrlProblem(u: string): string | null {
+  const t = u.trim()
+  if (!t) return null
+  let url: URL
+  try { url = new URL(t) } catch { return 'is not a valid web address' }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) return 'must start with https:// (http:// only for localhost)'
+  if (url.username || url.password || url.search || url.hash) return 'cannot contain a user name, password, ?query or #fragment'
+  return null
+}
+
+/** The base URL for a provider; a blank or unsafe override falls back to the official endpoint. */
 export function baseUrlFor(ai: Settings['ai'], p: Provider = ai.provider): string {
-  return ai.baseUrls[p]?.trim() || DEFAULT_BASE_URLS[p]
+  const u = ai.baseUrls[p]?.trim()
+  return u && !baseUrlProblem(u) ? u : DEFAULT_BASE_URLS[p]
 }

@@ -2,7 +2,8 @@
 // chunks that each keep their sheet heading and table header, and the model returns dated items as JSON.
 import type { ExtractedDeadline } from '../shared/types'
 import { deadlineKey } from '../shared/deadlineMap'
-import { InvalidJson } from './ai/json'
+import { CAP, InvalidJson } from './ai/json'
+import type { JsonSchema } from './ai/schema'
 
 export const MAX_SHEET_MARKDOWN = 400_000
 export const CHUNK_ROWS = 60
@@ -18,6 +19,27 @@ export const DEADLINES_SYSTEM = [
   'course: from a course column, the sheet name or the row text; when it is one of the known courses, copy that exact spelling; otherwise null.',
   'notes: other useful details from the same row (weight, time, room, format), or null. Never write "NaN" or "None".'
 ].join('\n')
+
+/** Gemini response schema for DEADLINES_SYSTEM; course and notes are nullable but always present. */
+export const DEADLINES_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    deadlines: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          date: { type: 'string', format: 'date' },
+          course: { type: ['string', 'null'] },
+          notes: { type: ['string', 'null'] }
+        },
+        required: ['title', 'date', 'course', 'notes']
+      }
+    }
+  },
+  required: ['deadlines']
+}
 
 export function deadlinesPrompt(chunk: string, part: number, of: number, today: string, courses: string[]): string {
   return `Today is ${today}.\nKnown courses: ${courses.length ? courses.join('; ') : '(none yet)'}\n\nSpreadsheet${of > 1 ? ` part ${part} of ${of}` : ''}:\n${chunk}`
@@ -97,10 +119,10 @@ export function validateDeadlines(raw: unknown): { items: ExtractedDeadline[]; d
   let dropped = 0
   for (const x of list) {
     const r = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>
-    const title = clean(r.title).slice(0, 200)
+    const title = clean(r.title).slice(0, CAP.name)
     const date = clean(r.date).slice(0, 10)
     if (!title || !realDate(date)) { dropped++; continue }
-    items.push({ title, date, courseName: clean(r.course) || null, notes: clean(r.notes) })
+    items.push({ title, date, courseName: clean(r.course).slice(0, CAP.course) || null, notes: clean(r.notes).slice(0, CAP.notes) })
   }
   return { items, dropped }
 }

@@ -4,7 +4,8 @@ import crypto from 'crypto'
 import type { Para } from '../shared/types'
 import { clamp, isGenericName, normName } from '../shared/util'
 import { firstSentenceName, safeName, sliceText } from './preprocess'
-import { InvalidJson } from './ai/json'
+import { CAP, InvalidJson, str, strList } from './ai/json'
+import type { JsonSchema } from './ai/schema'
 
 export const PROMPT_VERSION = 'org-v3'
 
@@ -20,6 +21,40 @@ export const ORGANIZE_SYSTEM = [
   'continues: true only for the first topic if it continues the previous window\'s last topic.',
   'Do not repeat the source text.'
 ].join('\n')
+
+// Gemini response schemas mirror each prompt's JSON shape in the same key order; all fields are required
+// (nullable where the prompt allows null) because optional or reordered fields make constrained output repeat.
+const DIFFICULTY: JsonSchema = { type: 'integer', minimum: 1, maximum: 5 }
+const TERMS: JsonSchema = { type: 'array', items: { type: 'string' }, maxItems: 6 }
+const PREREQS: JsonSchema = { type: 'array', items: { type: 'string' }, maxItems: 3 }
+
+/** title is null except in the first window. */
+export const ORGANIZE_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    title: { type: ['string', 'null'] },
+    topics: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          start: { type: 'integer' },
+          end: { type: 'integer' },
+          name: { type: 'string' },
+          unit: { type: 'string' },
+          summary: { type: 'string' },
+          difficulty: DIFFICULTY,
+          terms: TERMS,
+          prereqs: PREREQS,
+          continues: { type: 'boolean' }
+        },
+        required: ['start', 'end', 'name', 'unit', 'summary', 'difficulty', 'terms', 'prereqs', 'continues']
+      }
+    }
+  },
+  required: ['title', 'topics']
+}
 
 export function organizePrompt(o: { lessonTitle: string; outline: string; paras: Para[]; from: number; to: number; prevTopic: string | null; first: boolean }): string {
   const lines = o.paras.filter((p) => p.id >= o.from && p.id <= o.to).map((p) => `[p${p.id}] ${p.text}`)
@@ -53,11 +88,6 @@ function toInt(v: unknown): number | null {
   return null
 }
 
-function strList(v: unknown, max: number): string[] {
-  if (!Array.isArray(v)) return []
-  return v.map((x) => String(x ?? '').trim()).filter(Boolean).slice(0, max).map((s) => s.slice(0, 80))
-}
-
 function capWords(s: string, n: number): string {
   const w = s.split(/\s+/).filter(Boolean)
   return w.length <= n ? w.join(' ') : w.slice(0, n).join(' ')
@@ -84,12 +114,12 @@ export function normalizeWindow(raw: unknown, from: number, to: number, paras: P
     end = clamp(end, from, to)
     list.push({
       start, end,
-      name: capWords(String(r.name ?? '').replace(/\s+/g, ' ').trim(), 10),
-      unit: String(r.unit ?? '').trim().slice(0, 120),
-      summary: String(r.summary ?? '').trim().slice(0, 400),
+      name: capWords(str(r.name, CAP.name).replace(/\s+/g, ' '), 10),
+      unit: str(r.unit, CAP.name),
+      summary: str(r.summary, CAP.summary),
       difficulty: clamp(toInt(r.difficulty ?? r.d) ?? 3, 1, 5),
-      terms: strList(r.terms, 6),
-      prereqs: strList(r.prereqs ?? r.pre, 3),
+      terms: strList(r.terms, 6, CAP.term),
+      prereqs: strList(r.prereqs ?? r.pre, 3, CAP.term),
       continues: r.continues === true || r.continues === 'true'
     })
   }
@@ -120,7 +150,7 @@ export function normalizeWindow(raw: unknown, from: number, to: number, paras: P
     t.name = safeName(t.name, body, lessonTitle)
     if (!t.unit || isGenericName(t.unit)) t.unit = ''
   }
-  const title = typeof (obj as { title?: unknown }).title === 'string' ? String((obj as { title?: unknown }).title).trim() : null
+  const title = str((obj as { title?: unknown }).title, CAP.name) || null
   return { title: title && !isGenericName(title) ? capWords(title, 10) : null, topics: fixed }
 }
 
@@ -211,7 +241,23 @@ export function ambiguousPairs(topics: { name: string; unit: string }[], lo = 0.
   return out
 }
 
-export const DEDUPE_SYSTEM = 'You decide whether adjacent study topics cover the same concept. Return ONLY JSON: [{"pair":N,"same":bool,"name":string}] where name is the merged title (max 8 words) when same is true.'
+// Object root (not a bare array): the Interactions API and OpenAI JSON mode expect an object; the validator takes both.
+export const DEDUPE_SYSTEM = 'You decide whether adjacent study topics cover the same concept. Return ONLY JSON: {"pairs":[{"pair":N,"same":bool,"name":string}]} where name is the merged title (max 8 words) when same is true, else "".'
+
+export const DEDUPE_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    pairs: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { pair: { type: 'integer' }, same: { type: 'boolean' }, name: { type: 'string' } },
+        required: ['pair', 'same', 'name']
+      }
+    }
+  },
+  required: ['pairs']
+}
 
 export function dedupePrompt(pairs: { a: { name: string; summary: string }; b: { name: string; summary: string } }[]): string {
   return pairs.map((p, i) => `Pair ${i}:\nA: ${p.a.name} — ${p.a.summary}\nB: ${p.b.name} — ${p.b.summary}`).join('\n\n')
@@ -223,13 +269,64 @@ export const QUIZ_SYSTEM = [
   'Write 5 questions: 3 multiple choice and 2 short answer. Keep answers short. Test understanding, not trivia.'
 ].join('\n')
 
-export const GRADE_SYSTEM = 'You grade short answers against an answer key. Be fair about wording. Return ONLY JSON: [{"correct":bool,"feedback":string}] with one entry per item, feedback max 20 words.'
+/** Each question is either multiple choice (answer = option index) or short answer (answer = text). */
+export const QUIZ_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    questions: {
+      type: 'array',
+      minItems: 5,
+      maxItems: 5,
+      items: {
+        anyOf: [
+          {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['mc'] },
+              q: { type: 'string' },
+              options: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
+              answer: { type: 'integer', minimum: 0, maximum: 3 },
+              why: { type: 'string' }
+            },
+            required: ['type', 'q', 'options', 'answer', 'why']
+          },
+          {
+            type: 'object',
+            properties: { type: { type: 'string', enum: ['short'] }, q: { type: 'string' }, answer: { type: 'string' } },
+            required: ['type', 'q', 'answer']
+          }
+        ]
+      }
+    }
+  },
+  required: ['questions']
+}
+
+export const GRADE_SYSTEM = 'You grade short answers against an answer key. Be fair about wording. Return ONLY JSON: {"grades":[{"correct":bool,"feedback":string}]} with one entry per item, feedback max 20 words.'
+
+/** The item count varies per request: gradeSchema(n) in jobs.ts pins it, and the validator checks it too. */
+export const GRADE_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: {
+    grades: {
+      type: 'array',
+      items: { type: 'object', properties: { correct: { type: 'boolean' }, feedback: { type: 'string' } }, required: ['correct', 'feedback'] }
+    }
+  },
+  required: ['grades']
+}
 
 export const ENRICH_SYSTEM = [
   'You describe one study topic from its text.',
   'Return ONLY JSON: {"name":string,"summary":string,"difficulty":1-5,"terms":[string],"prereqs":[string]}',
   'name: specific concept title (max 8 words, never generic). summary 1-2 sentences, up to 6 terms, up to 3 prereqs.'
 ].join('\n')
+
+export const ENRICH_SCHEMA: JsonSchema = {
+  type: 'object',
+  properties: { name: { type: 'string' }, summary: { type: 'string' }, difficulty: DIFFICULTY, terms: TERMS, prereqs: PREREQS },
+  required: ['name', 'summary', 'difficulty', 'terms', 'prereqs']
+}
 
 export function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex')

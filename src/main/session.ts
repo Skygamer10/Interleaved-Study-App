@@ -84,6 +84,11 @@ export class SessionEngine {
 
   // ---------- lifecycle ----------
   start(o: { mode: 'timed' | 'pomodoro'; pool: Pool; poolLabel: string; topicId?: string | null }): SessionState {
+    // A suggestion picked from a preview can be merged or replaced before the click lands;
+    // refuse it up front instead of leaving an active session with no topic.
+    if (o.topicId && !this.d.repo.store.get<Topic>('topics', o.topicId)) {
+      throw new Error('That topic no longer exists (it was merged or reorganized). Pick it again from the updated list.')
+    }
     const sandbox = o.pool.kind === 'sandbox'
     this.state = {
       active: true, id: uid(), mode: o.mode, pool: o.pool, poolLabel: o.poolLabel, sandbox, phase: 'next', breakKind: null,

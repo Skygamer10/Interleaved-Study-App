@@ -5,6 +5,7 @@ import { Queue } from '../src/main/queue'
 import { makeHandlers } from '../src/main/jobs'
 import { importPaths } from '../src/main/importer'
 import { testModel } from '../src/main/ai/test'
+import { ORGANIZE_SCHEMA } from '../src/main/organize'
 import { isGenericName } from '../src/shared/util'
 import type { Doc, Job, ModelCaps, Quiz, RateLimitInfo, Topic } from '../src/shared/types'
 import { setup, writeLesson } from './helpers'
@@ -75,11 +76,14 @@ describe('AI queue with the mock server', () => {
     const topics = env.store.byParent<Topic>('topics', doc.id)
     expect(topics.every((t) => !t.provisional && t.name.startsWith('Concept of'))).toBe(true)
     expect(mock.state.requests.filter((r) => r.url.includes('generateContent'))).toHaveLength(n)
-    // system instruction, JSON mode and minimal thinking were sent
+    // system instruction, JSON mode with the response schema and minimal thinking were sent
     const body = mock.state.requests[0].body
     expect(body.systemInstruction).toBeTruthy()
     expect(body.generationConfig.responseMimeType).toBe('application/json')
+    expect(body.generationConfig.responseJsonSchema).toEqual(ORGANIZE_SCHEMA)
+    expect(body.generationConfig.responseSchema).toBeUndefined()
     expect(body.generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'minimal' })
+    expect(body.generationConfig.maxOutputTokens).toBe(env.settings.ai.maxOutputTokens)
     // Topic text is sliced locally from paragraph ranges
     expect(env.repo.topicText(topics[0].id).length).toBeGreaterThan(50)
     // Estimate now sees everything cached; re-organizing (not fresh) costs no requests
@@ -281,7 +285,9 @@ describe('Test model and the Interactions adapter', () => {
     reset()
     const r = await testModel({ baseUrl: mock.url, key: 'k', endpoint: 'auto' }, 'gemma-4-31b-it')
     expect(r.ok).toBe(true)
-    expect(r.caps).toMatchObject({ api: 'generateContent', system: true, json: true, thinkMinimal: true })
+    expect(r.caps).toMatchObject({ api: 'generateContent', system: true, json: true, thinkMinimal: true, schema: true })
+    expect(r.notes).toContain('Structured output (responseJsonSchema): supported.')
+    expect(mock.state.requests[0].body.generationConfig.responseJsonSchema).toMatchObject({ properties: { ok: { type: 'boolean' } } })
   })
   it('switches a gemini-3.x model to the Interactions API when generateContent fails', async () => {
     reset()
@@ -290,7 +296,10 @@ describe('Test model and the Interactions adapter', () => {
     expect(r.ok).toBe(true)
     expect(r.caps.api).toBe('interactions')
     const req = mock.state.requests.find((x) => x.url.endsWith('/interactions'))!
-    expect(req.body).toMatchObject({ model: 'gemini-3.8-flash', system_instruction: expect.any(String), response_mime_type: 'application/json' })
+    expect(req.body).toMatchObject({ model: 'gemini-3.8-flash', system_instruction: expect.any(String), response_format: { type: 'text', mime_type: 'application/json', schema: { type: 'object' } } })
+    expect(req.body.response_mime_type).toBeUndefined()
+    expect(r.caps.schema).toBe(true)
+    expect(r.notes).toContain('Structured output (response_format schema): supported.')
   })
   it('reports the exact error when the model is unknown', async () => {
     reset()

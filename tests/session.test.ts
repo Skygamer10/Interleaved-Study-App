@@ -144,3 +144,23 @@ describe('sandbox', () => {
     expect(x.store.get<Topic>('topics', x.a.id)!.reviews).toHaveLength(0)
   })
 })
+
+describe('starting while topics change underneath', () => {
+  it('the global pool computes the same topics for preview and start, even after a merge', () => {
+    const x = env()
+    const preview = x.engine.suggest({ kind: 'global' }, false)
+    expect(preview).toHaveLength(3)
+    x.repo.mergeTopics([x.a.id, x.b.id]) // e.g. "Check similar topics" finishing between preview and click
+    const s = x.engine.start({ mode: 'timed', pool: { kind: 'global' }, poolLabel: 'All' })
+    expect(s.phase).toBe('work')
+    expect(x.store.get<Topic>('topics', s.topicId!)).toBeDefined()
+  })
+
+  it('refuses a picked topic that was merged away instead of leaving an empty active session', () => {
+    const x = env()
+    const kept = x.repo.mergeTopics([x.a.id, x.b.id])
+    const gone = kept === x.a.id ? x.b.id : x.a.id
+    expect(() => x.engine.start({ mode: 'timed', pool: { kind: 'global' }, poolLabel: 'All', topicId: gone })).toThrow(/no longer exists/)
+    expect(x.engine.state).toBeNull()
+  })
+})

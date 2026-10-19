@@ -1,13 +1,24 @@
-// Import flow shared by drag-and-drop and the Import buttons: confirm replacing changed lessons that carry
-// study history, then show the AI estimate before organizing starts.
+// Import flow shared by drag-and-drop and the Upload buttons: confirm replacing changed lessons that carry
+// study history, then show the AI estimate before organizing starts. New courses are never named after the
+// files: anything dropped outside an open course goes to the New course flow so the student names it.
 import { useEffect, useState } from 'react'
 import type { Estimate, ImportResult } from '../../../shared/types'
 import { api, errMsg } from '../api'
-import { useApp } from '../state'
+import { addPaths, useApp } from '../state'
 import { Modal } from '../ui'
 
-type Handler = { paths: (p: string[]) => Promise<void>; pick: (k: 'files' | 'folder') => Promise<void>; estimate: (docIds?: string[]) => Promise<void> }
-export const importFlow: Handler = { paths: async () => {}, pick: async () => {}, estimate: async () => {} }
+type Handler = {
+  /** Import into `courseId`; lessons go nowhere else. */
+  paths: (p: string[], courseId: string) => Promise<void>
+  pick: (k: 'files' | 'folder', courseId: string) => Promise<void>
+  /** Files dropped on the window: into the New course flow when it is open, else the open course, else a new course. */
+  drop: (p: string[]) => void
+  estimate: (docIds?: string[]) => Promise<void>
+}
+export const importFlow: Handler = { paths: async () => {}, pick: async () => {}, drop: () => {}, estimate: async () => {} }
+
+/** The course open on the Topics tab, if any; the Board keeps this current. */
+export const importTarget: { course: string | null } = { course: null }
 
 function merge(a: ImportResult, b: ImportResult): ImportResult {
   return {
@@ -17,7 +28,7 @@ function merge(a: ImportResult, b: ImportResult): ImportResult {
 }
 
 export function ImportFlow() {
-  const { toast, setView } = useApp()
+  const { toast, view, setView, courseWizard, setCourseWizard } = useApp()
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [estimate, setEstimate] = useState<{ est: Estimate; docIds?: string[] } | null>(null)
@@ -35,16 +46,21 @@ export function ImportFlow() {
   }
 
   useEffect(() => {
-    importFlow.paths = async (paths) => {
+    importFlow.paths = async (paths, courseId) => {
       setBusy(true)
-      try { await finish(await api.importPaths(paths)) } catch (e) { toast(errMsg(e), true) } finally { setBusy(false) }
+      try { await finish(await api.importPaths(paths, false, courseId)) } catch (e) { toast(errMsg(e), true) } finally { setBusy(false) }
     }
-    importFlow.pick = async (k) => {
+    importFlow.pick = async (k, courseId) => {
       try {
-        setBusy(true)
-        const r = await api.pickImport(k)
-        if (r) await finish(r)
-      } catch (e) { toast(errMsg(e), true) } finally { setBusy(false) }
+        const paths = await api.pickPaths(k)
+        if (paths.length) await importFlow.paths(paths, courseId)
+      } catch (e) { toast(errMsg(e), true) }
+    }
+    importFlow.drop = (paths) => {
+      const target = view === 'board' ? importTarget.course : null
+      if (courseWizard) setCourseWizard((p) => addPaths(p, paths))
+      else if (target) void importFlow.paths(paths, target)
+      else { setView('board'); setCourseWizard(addPaths(null, paths)) }
     }
     importFlow.estimate = async (docIds) => {
       try { setEstimate({ est: await api.estimate(docIds), docIds }) } catch (e) { toast(errMsg(e), true) }

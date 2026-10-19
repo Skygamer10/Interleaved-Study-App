@@ -27,7 +27,6 @@ export function QueueView() {
   useEffect(() => { void api.estimate().then(setEst).catch(() => setEst(null)) }, [data])
   if (!queue || !data) return <div className="empty"><Spinner /></div>
   const s = queue
-  const eta = s.etaSec >= 60 ? `${Math.ceil(s.etaSec / 60)} min` : `${s.etaSec} s`
   return (
     <div className="page">
       <div className="page-inner">
@@ -57,7 +56,6 @@ export function QueueView() {
           <div className="statline">
             <div className="stat"><b className="num">{s.docsDone}/{s.docsTotal}</b><span>lessons done</span></div>
             <div className="stat"><b className="num">{s.chunksDone}/{s.chunksTotal}</b><span>windows done</span></div>
-            <div className="stat"><b className="num">{s.queued ? eta : 'idle'}</b><span>estimated time left</span></div>
           </div>
           {s.running && <p className="row-flex"><Spinner /> {s.running}</p>}
           <p className="help">One request at a time, as fast as the provider allows. If its rate limit is reached, everything pauses and you get a notification; Continue picks up exactly where it stopped. If the app closes mid-run, the queue resumes on the next launch.</p>

@@ -11,7 +11,7 @@ import { AppProvider, useApp, type View } from './state'
 import { api, errMsg } from './api'
 import { Icon } from './icons'
 import { Ribbon } from './components/Ribbon'
-import { ImportFlow, importFlow } from './components/ImportFlow'
+import { ImportFlow, importFlow, importTarget } from './components/ImportFlow'
 import { Board } from './views/Board'
 import { SessionView } from './views/Session'
 import { Plan } from './views/Plan'
@@ -72,34 +72,50 @@ function Shortcuts() {
 }
 
 function DropTarget() {
+  const { view, courseWizard, courses } = useApp()
   const [over, setOver] = useState(false)
   useEffect(() => {
     let depth = 0
     const hasFiles = (e: DragEvent): boolean => !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')
+    const reset = (): void => { depth = 0; setOver(false) }
     const enter = (e: DragEvent): void => { if (hasFiles(e)) { depth++; setOver(true) } }
-    const leave = (): void => { depth = Math.max(0, depth - 1); if (!depth) setOver(false) }
+    // A cancelled drag (Esc, or leaving the window) can skip leave events, so leaving the window resets the count.
+    const outside = (e: DragEvent): boolean => e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight
+    const leave = (e: DragEvent): void => {
+      depth--
+      if (depth <= 0 || outside(e)) reset()
+    }
     const overFn = (e: DragEvent): void => { if (hasFiles(e)) e.preventDefault() }
     const drop = (e: DragEvent): void => {
       e.preventDefault()
-      depth = 0
-      setOver(false)
+      reset()
       const files = Array.from(e.dataTransfer?.files ?? [])
       const paths = files.map((f) => api.pathForFile(f)).filter(Boolean)
-      if (paths.length) void importFlow.paths(paths)
+      if (paths.length) importFlow.drop(paths)
     }
     window.addEventListener('dragenter', enter)
     window.addEventListener('dragleave', leave)
     window.addEventListener('dragover', overFn)
     window.addEventListener('drop', drop)
+    window.addEventListener('dragend', reset)
     return () => {
       window.removeEventListener('dragenter', enter)
       window.removeEventListener('dragleave', leave)
       window.removeEventListener('dragover', overFn)
       window.removeEventListener('drop', drop)
+      window.removeEventListener('dragend', reset)
     }
   }, [])
   if (!over) return null
-  return <div className="dropzone"><div>Drop lesson files or folders to import (.md and .txt; PDF and DOCX best effort)</div></div>
+  const target = view === 'board' && !courseWizard ? courses.get(importTarget.course ?? '') : undefined
+  return (
+    <div className="dropzone">
+      <div>
+        {courseWizard ? 'Drop files or folders to add them to the new course' : target ? `Drop lesson files or folders to add them to ${target.name}` : 'Drop lesson files or folders to start a new course'}
+        <span className="muted small" style={{ display: 'block', marginTop: 4 }}>.md and .txt; PDF and DOCX best effort</span>
+      </div>
+    </div>
+  )
 }
 
 function TitleBar() {

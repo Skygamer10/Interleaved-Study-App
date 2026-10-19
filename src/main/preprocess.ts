@@ -12,7 +12,7 @@ export function normalizeText(raw: string): string {
     .replace(/[​-‍⁠]/g, '')
     .replace(/(\p{L})-\n(\p{Ll})/gu, '$1$2') // de-hyphenate words broken across lines
     .replace(/\t/g, '  ')
-    .replace(/[ ]{2,}/g, ' ')
+    .replace(/[^\S\n]{2,}/g, ' ') // any run of non-newline whitespace (incl. U+3000, \f) becomes one space
     .split('\n').map((l) => l.trimEnd()).join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
@@ -32,7 +32,7 @@ export function stripJunk(text: string): string {
   const out: string[] = []
   for (const l of lines) {
     const t = l.trim()
-    if (PAGE_NUM.test(t) && t.length > 0) continue
+    if (t.length > 0 && t.length <= 40 && PAGE_NUM.test(t)) continue // short lines only: keeps the regex cheap
     if (RULE.test(t)) continue
     if (/^!\[[^\]]*\]\([^)]*\)$/.test(t)) continue // image-only lines carry no study text
     const k = t.toLowerCase().replace(/\d+/g, '#')
@@ -44,10 +44,10 @@ export function stripJunk(text: string): string {
 
 function stripInline(s: string): string {
   return s
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/!\[[^[\]]*\]\([^()]*\)/g, '')
+    .replace(/\[([^[\]]+)\]\([^()]*\)/g, '$1')
     .replace(/[*_`~]+/g, '')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<[^<>]+>/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -61,7 +61,7 @@ export function detectHeading(block: string): { level: number; text: string } | 
     return null
   }
   const t = block.trim()
-  const md = t.match(/^(#{1,6})\s+(.+?)\s*#*$/)
+  const md = t.length <= 300 ? t.match(/^(#{1,6})\s+(.+?)\s*#*$/) : null // bounded: the lazy group backtracks on long lines
   if (md) return { level: md[1].length, text: stripInline(md[2]) }
   const bold = t.match(/^(?:\*\*|__)(.{2,90})(?:\*\*|__):?$/)
   if (bold && wordCount(bold[1]) <= 12) return { level: 3, text: stripInline(bold[1]) }
@@ -185,7 +185,9 @@ export function firstSentenceName(text: string, maxWords = 6): string {
   const sentence = (clean.match(/^[^.!?:;]+/) || [clean])[0]
   let words = sentence.split(/\s+/).filter((w) => /[\p{L}\p{N}]/u.test(w)).slice(0, maxWords)
   while (words.length > 2 && STOP_TAIL.has(words[words.length - 1].toLowerCase())) words = words.slice(0, -1)
-  const s = words.join(' ').replace(/[,()"'“”]+$/g, '').trim()
+  let s = words.join(' ')
+  while (s && ',()"\'“”'.includes(s[s.length - 1])) s = s.slice(0, -1)
+  s = s.trim()
   if (!s) return ''
   return s.charAt(0).toUpperCase() + s.slice(1)
 }

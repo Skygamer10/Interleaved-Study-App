@@ -1,5 +1,5 @@
 // Topics-tab customisation UI: popovers, colour picker, per-group menu and the Customize panel.
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { COLS, SWATCHES, colorCss, type Layout, type Prefs } from '../layout'
 import { Icon } from '../icons'
 
@@ -15,10 +15,24 @@ export function Pop({ label, title, className, children }: { label: ReactNode; t
     window.addEventListener('keydown', key, true)
     return () => { document.removeEventListener('mousedown', down); window.removeEventListener('keydown', key, true) }
   }, [open])
+  // Popovers hang right-aligned from their button; flip to left-aligned when that would cut them off
+  // at the left edge of a scrolling ancestor (e.g. the menu beside a course title).
+  const popRef = useRef<HTMLDivElement>(null)
+  const [alignLeft, setAlignLeft] = useState(false)
+  useLayoutEffect(() => {
+    if (!open) { setAlignLeft(false); return }
+    const pop = popRef.current
+    if (!pop) return
+    let left = 0
+    for (let el = pop.parentElement; el; el = el.parentElement) {
+      if (getComputedStyle(el).overflowX !== 'visible') left = Math.max(left, el.getBoundingClientRect().left)
+    }
+    if (pop.getBoundingClientRect().left < left + 4) setAlignLeft(true)
+  }, [open])
   return (
     <span className="pop-wrap" ref={ref} onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
       <button className={`btn ${className ?? 'ghost icon'}`} title={title} aria-label={title} aria-expanded={open} onClick={() => setOpen((o) => !o)}>{label}</button>
-      {open && <div className="popover" role="dialog" aria-label={title}>{children(() => setOpen(false))}</div>}
+      {open && <div ref={popRef} className={`popover${alignLeft ? ' align-left' : ''}`} role="dialog" aria-label={title}>{children(() => setOpen(false))}</div>}
     </span>
   )
 }

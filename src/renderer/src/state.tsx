@@ -1,6 +1,6 @@
 // App-wide state: data snapshot from main (refetched on change events), queue and session state pushed
 // from main, plus UI state that must survive view switches (selection, scope, pending rating).
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react'
 import type { Bootstrap, Course, DataSnapshot, Doc, QueueStatus, Rating, SessionState, Settings, Topic } from '../../shared/types'
 import type { DeepPartial } from '../../shared/api'
 import { api, errMsg } from './api'
@@ -36,6 +36,9 @@ interface Ctx {
   advanceKey: number
   quickstart: number
   requestQuickstart: () => void
+  /** Files and folders waiting in the New course flow; null while it is closed. */
+  courseWizard: string[] | null
+  setCourseWizard: Dispatch<SetStateAction<string[] | null>>
 }
 
 const C = createContext<Ctx | null>(null)
@@ -76,6 +79,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [pending, setPendingState] = useState<{ rating: Rating | null; quiz: number | null; note: string }>({ rating: null, quiz: null, note: '' })
   const [advanceKey, setAdvanceKey] = useState(0)
   const [quickstart, setQuickstart] = useState(0)
+  const [courseWizard, setCourseWizard] = useState<string[] | null>(null)
   const toastTimer = useRef<number | null>(null)
   const lastTopicRef = useRef<string | null>(null)
 
@@ -155,11 +159,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: Ctx = {
     boot, settings, saveSettings, data, dataError, reload, queue, session, now, view, setView, selected, setSelected,
     scope, setScope, toast, toastMsg, ...maps, pending, setPending, refreshBoot, advanceKey, quickstart,
-    requestQuickstart: () => setQuickstart((x) => x + 1)
+    requestQuickstart: () => setQuickstart((x) => x + 1), courseWizard, setCourseWizard
   }
   return <C.Provider value={value}>{children}</C.Provider>
 }
 
 export function courseClass(c: Course | undefined): string {
   return `c${(c?.color ?? 0) % 8}`
+}
+
+/** Add paths to a list without duplicates. */
+export function addPaths(list: string[] | null, paths: string[]): string[] {
+  return [...new Set([...(list ?? []), ...paths])]
 }

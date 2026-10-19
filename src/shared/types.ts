@@ -195,7 +195,11 @@ export interface ModelCaps {
   system: boolean | null
   json: boolean | null
   thinkMinimal: boolean | null // Gemini minimal thinking, Claude low effort, OpenAI low reasoning effort
+  thinkLevel?: 'minimal' | 'low' | 'none' | null // Gemini: cheapest thinking level accepted ('none': no control)
   fallback?: boolean | null // Claude server-side refusal fallback
+  schema?: boolean | null // Gemini structured output (response schema); absent in caps saved before it existed
+  schemaFails?: number // Gemini: unexplained schema rejections in a row; the second turns schemas off
+  room?: boolean | null // Gemini: false when thinking headroom goes past the model's output limit
   testedAt?: number
   lastError?: string | null
 }

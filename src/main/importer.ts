@@ -2,10 +2,11 @@
 // Unchanged files (same content hash) are never re-analyzed; changed files keep history where topics still match.
 import fs from 'fs'
 import path from 'path'
-import type { Doc, ImportResult, Job } from '../shared/types'
+import type { Course, Doc, ImportResult, Job } from '../shared/types'
 import { prepare } from './preprocess'
 import { sha256 } from './organize'
 import { uid, type Repo } from './repo'
+import { courseCode } from '../shared/util'
 
 export const TEXT_EXT = ['.md', '.markdown', '.txt']
 export const BEST_EFFORT_EXT = ['.pdf', '.docx']
@@ -103,13 +104,31 @@ export async function readDocument(file: string): Promise<{ text: string; note: 
   throw new Error(`Unsupported file type ${ext}. Use .md or .txt (PDF and DOCX are best effort).`)
 }
 
-export async function importPaths(repo: Repo, paths: string[], confirm = false): Promise<ImportResult> {
+/**
+ * Import files and folders as lessons. With `courseId`, every new lesson goes into that course (the student named
+ * it); without, courses are inferred from the files. Lessons imported before stay in their course either way.
+ */
+export async function importPaths(repo: Repo, paths: string[], confirm = false, courseId?: string | null): Promise<ImportResult> {
   const store = repo.store
   const res: ImportResult = { added: 0, unchanged: 0, replaced: 0, needsConfirm: [], errors: [], notes: [], docIds: [] }
+  const target = courseId ? store.get<Course>('courses', courseId) : null
+  if (courseId && !target) throw new Error('That course no longer exists.')
   const files = walk(paths)
   if (!files.length) {
     res.errors.push({ path: paths.join(', '), error: 'No .md, .txt, .pdf or .docx files found' })
     return res
+  }
+  // A folder whose files share one course code ("CHM110 - …") becomes that course; otherwise the folder name is used.
+  const codes = new Map<string, Set<string>>()
+  for (const f of files) {
+    const c = courseCode(path.basename(f))
+    if (!c) continue
+    const dir = path.dirname(f)
+    codes.set(dir, (codes.get(dir) ?? new Set()).add(c))
+  }
+  const courseFor = (file: string): string => {
+    const dir = codes.get(path.dirname(file))
+    return courseCode(path.basename(file)) ?? (dir?.size === 1 ? [...dir][0] : path.basename(path.dirname(file)))
   }
   let bestEffort = false
   for (const file of files) {
@@ -161,7 +180,7 @@ export async function importPaths(repo: Repo, paths: string[], confirm = false):
       res.docIds.push(existing.id)
       continue
     }
-    const course = repo.ensureCourse(path.basename(path.dirname(file)))
+    const course = target ?? repo.ensureCourse(courseFor(file))
     const fileName = path.basename(file)
     const doc: Doc = {
       id: uid(), courseId: course.id, title: fileName.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim(), fileName, path: file,

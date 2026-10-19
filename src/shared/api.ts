@@ -25,6 +25,7 @@ export interface Api {
   deleteTopics(ids: string[]): Promise<void>
   override(id: string, action: OverrideAction): Promise<void>
   reviewTopic(id: string, rating: Rating | null, quiz: number | null, minutes: number, note?: string): Promise<void>
+  createCourse(name: string): Promise<string>
   renameCourse(id: string, name: string): Promise<void>
   deleteCourse(id: string): Promise<void>
   renameDoc(id: string, title: string): Promise<void>
@@ -33,8 +34,9 @@ export interface Api {
   reorganize(docId: string): Promise<void>
   retryDoc(docId: string): Promise<void>
 
-  pickImport(kind: 'files' | 'folder'): Promise<ImportResult | null>
-  importPaths(paths: string[], confirm?: boolean): Promise<ImportResult>
+  /** Let the student choose files or folders; nothing is imported yet. Empty when cancelled. */
+  pickPaths(kind: 'files' | 'folder'): Promise<string[]>
+  importPaths(paths: string[], confirm?: boolean, courseId?: string | null): Promise<ImportResult>
 
   estimate(docIds?: string[]): Promise<Estimate>
   startQueue(docIds?: string[]): Promise<void>
@@ -81,9 +83,9 @@ export type ApiEvent = 'data' | 'queue' | 'session' | 'nav'
 export const API_METHODS: (keyof Api)[] = [
   'bootstrap', 'setSettings', 'setKey', 'clearKey', 'testModel', 'capsCheck',
   'snapshot', 'topicText', 'search', 'renameTopic', 'updateTopic', 'mergeTopics', 'splitTopic', 'addTopic',
-  'deleteTopics', 'override', 'reviewTopic', 'renameCourse', 'deleteCourse', 'renameDoc', 'deleteDoc',
+  'deleteTopics', 'override', 'reviewTopic', 'createCourse', 'renameCourse', 'deleteCourse', 'renameDoc', 'deleteDoc',
   'historyCount', 'reorganize', 'retryDoc',
-  'pickImport', 'importPaths',
+  'pickPaths', 'importPaths',
   'estimate', 'startQueue', 'pauseQueue', 'resumeQueue', 'queueStatus', 'retryJob', 'discardJob',
   'quiz', 'grade',
   'sessionState', 'sessionPreview', 'sessionStart', 'sessionPause', 'sessionResume', 'sessionExtend',

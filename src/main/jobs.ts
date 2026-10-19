@@ -4,15 +4,17 @@ import type { Doc, ExtractedDeadline, Grade, Job, Quiz, QuizQuestion, Topic } fr
 import { clamp, suggestedMinutes } from '../shared/util'
 import type { Handler } from './queue'
 import type { Repo } from './repo'
-import { InvalidJson } from './ai/json'
+import { CAP, InvalidJson, num, str, strList } from './ai/json'
+import type { JsonSchema } from './ai/schema'
 import {
-  DEDUPE_SYSTEM, ENRICH_SYSTEM, GRADE_SYSTEM, ORGANIZE_SYSTEM, QUIZ_SYSTEM, cacheKey, dedupePrompt, normalizeWindow,
-  organizePrompt, sha256, windowCacheContent, type WinResult
+  DEDUPE_SCHEMA, DEDUPE_SYSTEM, ENRICH_SCHEMA, ENRICH_SYSTEM, GRADE_SCHEMA, GRADE_SYSTEM, ORGANIZE_SCHEMA, ORGANIZE_SYSTEM,
+  QUIZ_SCHEMA, QUIZ_SYSTEM, cacheKey, dedupePrompt, normalizeWindow, organizePrompt, sha256, windowCacheContent, type WinResult
 } from './organize'
 import { safeName } from './preprocess'
-import { DEADLINES_SYSTEM, deadlinesPrompt, mergeExtracted, validateDeadlines } from './deadlines'
+import { DEADLINES_SCHEMA, DEADLINES_SYSTEM, deadlinesPrompt, mergeExtracted, validateDeadlines } from './deadlines'
 
 export const QUIZ_TEXT_CHARS = 14000
+export const MAX_GRADE_ITEMS = 8
 
 export function validateQuiz(raw: unknown): QuizQuestion[] {
   const list = Array.isArray(raw) ? raw : (raw as { questions?: unknown })?.questions
@@ -21,19 +23,21 @@ export function validateQuiz(raw: unknown): QuizQuestion[] {
   for (const q of list) {
     if (!q || typeof q !== 'object') continue
     const r = q as Record<string, unknown>
-    const text = String(r.q ?? r.question ?? '').trim()
+    const text = str(r.q ?? r.question, CAP.quiz)
     if (!text) continue
     if (Array.isArray(r.options) && r.options.length >= 2) {
-      const options = r.options.map((o) => String(o)).slice(0, 6)
-      let answer = typeof r.answer === 'number' ? r.answer : Number(r.answer)
+      const options = r.options.slice(0, 6).map((o) => str(o, CAP.quiz))
+      if (options.some((o) => !o)) continue
+      let answer = num(r.answer)
       if (!Number.isInteger(answer)) {
-        const idx = options.findIndex((o) => o.trim().toLowerCase() === String(r.answer ?? '').trim().toLowerCase())
-        answer = idx
+        const a = str(r.answer, CAP.quiz).toLowerCase()
+        answer = options.findIndex((o) => o.toLowerCase() === a)
       }
       if (answer < 0 || answer >= options.length) continue
-      out.push({ type: 'mc', q: text, options, answer, why: r.why ? String(r.why) : undefined })
-    } else if (r.answer !== undefined && String(r.answer).trim()) {
-      out.push({ type: 'short', q: text, answer: String(r.answer).trim() })
+      out.push({ type: 'mc', q: text, options, answer, why: str(r.why, CAP.quiz) || undefined })
+    } else {
+      const answer = str(r.answer, CAP.quiz)
+      if (answer) out.push({ type: 'short', q: text, answer })
     }
   }
   if (out.length < 2) throw new InvalidJson('Too few valid questions', JSON.stringify(raw)?.slice(0, 300) ?? '')
@@ -43,7 +47,47 @@ export function validateQuiz(raw: unknown): QuizQuestion[] {
 export function validateGrades(raw: unknown, n: number): Grade[] {
   const list = Array.isArray(raw) ? raw : (raw as { grades?: unknown })?.grades
   if (!Array.isArray(list) || list.length !== n) throw new InvalidJson(`Expected ${n} grades`, JSON.stringify(raw)?.slice(0, 300) ?? '')
-  return list.map((g) => ({ correct: !!(g as Grade)?.correct, feedback: String((g as Grade)?.feedback ?? '').slice(0, 200) }))
+  return list.map((g) => {
+    const r = (g && typeof g === 'object' ? g : {}) as Record<string, unknown>
+    return { correct: r.correct === true, feedback: str(r.feedback, CAP.feedback) }
+  })
+}
+
+/** Pairs judged by the model; only integer pair indexes count, and only `same: true` merges. */
+export function validateDedupe(raw: unknown): { pair: number; same: boolean; name: string }[] {
+  const list = Array.isArray(raw) ? raw : (raw as { pairs?: unknown })?.pairs
+  if (!Array.isArray(list)) throw new InvalidJson('Expected an array', JSON.stringify(raw)?.slice(0, 200) ?? '')
+  return list.flatMap((x) => {
+    const r = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>
+    return typeof r.pair === 'number' && Number.isInteger(r.pair) ? [{ pair: r.pair, same: r.same === true, name: str(r.name, CAP.name) }] : []
+  })
+}
+
+export function validateEnrich(raw: unknown): { name: string; summary: string; difficulty: number; terms: string[]; prereqs: string[] } {
+  const o = raw as Record<string, unknown>
+  if (!o || typeof o !== 'object' || typeof o.summary !== 'string') throw new InvalidJson('Expected an object with summary', JSON.stringify(raw)?.slice(0, 200) ?? '')
+  return {
+    name: str(o.name, CAP.name), summary: str(o.summary, CAP.summary), difficulty: clamp(num(o.difficulty) || 3, 1, 5),
+    terms: strList(o.terms, 6, CAP.term), prereqs: strList(o.prereqs, 3, CAP.term)
+  }
+}
+
+/** GRADE_SCHEMA with the item count pinned for one request (minItems = maxItems = n, n within 1-8). */
+export function gradeSchema(n: number): JsonSchema {
+  const k = clamp(Math.trunc(n) || 1, 1, MAX_GRADE_ITEMS)
+  const s = structuredClone(GRADE_SCHEMA)
+  Object.assign(s.properties!.grades, { minItems: k, maxItems: k })
+  return s
+}
+
+/** A grade job's items as sent by the window: 1-8 of them, every field text and capped. */
+export function gradeItems(payload: unknown): { q: string; key: string; answer: string }[] {
+  const list = (payload as { items?: unknown } | null)?.items
+  if (!Array.isArray(list) || list.length < 1 || list.length > MAX_GRADE_ITEMS) throw new Error(`Grading takes 1 to ${MAX_GRADE_ITEMS} answers at a time`)
+  return list.map((it) => {
+    const r = (it && typeof it === 'object' ? it : {}) as Record<string, unknown>
+    return { q: str(r.q, CAP.quiz), key: str(r.key, CAP.quiz), answer: str(r.answer, CAP.answer) }
+  })
 }
 
 export function makeHandlers(repo: Repo): Record<string, Handler> {
@@ -64,6 +108,7 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
       prompt: organizePrompt({ lessonTitle: doc.fileName || doc.title, outline: prep.outline, paras: prep.paras, from: p.from, to: p.to, prevTopic, first: p.win === 0 }),
       maxOutput: s.maxOutputTokens,
       validate: (raw) => normalizeWindow(raw, p.from, p.to, prep.paras, doc.title),
+      schema: ORGANIZE_SCHEMA,
       cacheKey: key,
       skipCacheRead: !!p.fresh
     })
@@ -80,15 +125,12 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
       .map(([a, b]) => [store.get<Topic>('topics', a), store.get<Topic>('topics', b)] as const)
       .filter((x): x is readonly [Topic, Topic] => !!x[0] && !!x[1])
     if (!pairs.length) return []
-    const res = await ai<{ pair: number; same: boolean; name: string }[]>({
+    const res = await ai({
       system: DEDUPE_SYSTEM,
       prompt: dedupePrompt(pairs.map(([a, b]) => ({ a: { name: a.name, summary: a.summary }, b: { name: b.name, summary: b.summary } }))),
       maxOutput: 400,
-      validate: (raw) => {
-        const list = Array.isArray(raw) ? raw : (raw as { pairs?: unknown })?.pairs
-        if (!Array.isArray(list)) throw new InvalidJson('Expected an array', JSON.stringify(raw)?.slice(0, 200) ?? '')
-        return list.map((x) => ({ pair: Number((x as { pair: unknown }).pair), same: !!(x as { same: unknown }).same, name: String((x as { name?: unknown }).name ?? '') }))
-      },
+      validate: validateDedupe,
+      schema: DEDUPE_SCHEMA,
       cacheKey: cacheKey('dedupe', JSON.stringify(pairs.map(([a, b]) => [a.name, a.summary, b.name, b.summary])), repo.settings().ai.model, repo.settings().ai.includeModelInCacheKey)
     })
     for (const r of res) {
@@ -104,18 +146,12 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
     const t = store.get<Topic>('topics', job.topicId!)
     if (!t) return null
     const text = repo.topicText(t.id).slice(0, QUIZ_TEXT_CHARS)
-    const r = await ai<{ name: string; summary: string; difficulty: number; terms: string[]; prereqs: string[] }>({
+    const r = await ai({
       system: ENRICH_SYSTEM,
       prompt: `Topic name given by the student: ${t.name}\n\nText:\n${text}`,
       maxOutput: 400,
-      validate: (raw) => {
-        const o = raw as Record<string, unknown>
-        if (!o || typeof o !== 'object' || typeof o.summary !== 'string') throw new InvalidJson('Expected an object with summary', JSON.stringify(raw)?.slice(0, 200) ?? '')
-        return {
-          name: String(o.name ?? ''), summary: o.summary.slice(0, 400), difficulty: clamp(Number(o.difficulty) || 3, 1, 5),
-          terms: Array.isArray(o.terms) ? o.terms.map(String).slice(0, 6) : [], prereqs: Array.isArray(o.prereqs) ? o.prereqs.map(String).slice(0, 3) : []
-        }
-      },
+      validate: validateEnrich,
+      schema: ENRICH_SCHEMA,
       cacheKey: cacheKey('enrich', text, repo.settings().ai.model, repo.settings().ai.includeModelInCacheKey)
     })
     const cur = store.get<Topic>('topics', t.id)
@@ -141,6 +177,7 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
       prompt: `Topic: ${t.name}\n\nText:\n${text}`,
       maxOutput: 900,
       validate: validateQuiz,
+      schema: QUIZ_SCHEMA,
       cacheKey: cacheKey('quiz', text, repo.settings().ai.model, repo.settings().ai.includeModelInCacheKey),
       skipCacheRead: !!(job.payload as { regenerate?: boolean }).regenerate
     })
@@ -150,12 +187,13 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
   }
 
   const grade: Handler = async (job, ai) => {
-    const items = (job.payload as { items: { q: string; key: string; answer: string }[] }).items
+    const items = gradeItems(job.payload)
     return ai<Grade[]>({
       system: GRADE_SYSTEM,
       prompt: items.map((it, i) => `Item ${i}\nQuestion: ${it.q}\nAnswer key: ${it.key}\nStudent answer: ${it.answer || '(blank)'}`).join('\n\n'),
       maxOutput: 400,
-      validate: (raw) => validateGrades(raw, items.length)
+      validate: (raw) => validateGrades(raw, items.length),
+      schema: gradeSchema(items.length)
     })
   }
 
@@ -172,6 +210,7 @@ export function makeHandlers(repo: Repo): Record<string, Handler> {
         prompt,
         maxOutput: clamp(rows * 45 + 200, 600, 6000),
         validate: validateDeadlines,
+        schema: DEADLINES_SCHEMA,
         cacheKey: cacheKey('deadlines', prompt, s.model, s.includeModelInCacheKey)
       }))
     }

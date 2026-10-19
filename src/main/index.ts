@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx'
 import type { Api, ApiEvent } from '../shared/api'
 import { API_METHODS } from '../shared/api'
 import type { Caps, Deadline, DeadlineExtract, DeadlineInput, Doc, ExtractedDeadline, Job, ModelCaps, Provider, Quiz, SheetData, Settings, Topic } from '../shared/types'
-import { mergeSettings, deepMerge, baseUrlFor, providerInfo, PROVIDERS } from '../shared/defaults'
+import { DEFAULT_BASE_URLS, baseUrlFor, baseUrlProblem, deepMerge, mergeSettings, providerInfo, PROVIDERS } from '../shared/defaults'
 import { deadlineKey } from '../shared/deadlineMap'
 import { dayKey } from '../shared/util'
 import { openStore, type Store } from './store'
@@ -23,6 +23,9 @@ import { sha256 } from './organize'
 import { MAX_SHEET_MARKDOWN, chunkMarkdown, sheetsToMarkdown } from './deadlines'
 import { INSTALL_HINT, findMarkitdown, markitdownConvert } from './markitdown'
 
+
+const EXTERNAL_HOSTS = new Set(['aistudio.google.com', 'platform.claude.com', 'platform.openai.com', 'github.com'])
+const isProvider = (p: unknown): p is Provider => PROVIDERS.some((x) => x.id === p)
 let win: BrowserWindow | null = null
 let tray: Tray | null = null // module-level reference so it is not garbage collected
 let store: Store
@@ -145,12 +148,16 @@ function createWindow(): void {
   win.on('focus', () => { if (process.platform === 'darwin' && app.dock) app.dock.setBadge('') })
   win.on('closed', () => { win = null })
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https:\/\//.test(url)) void shell.openExternal(url)
+    // Only the provider consoles and docs the app links to open in the browser.
+    try {
+      const u = new URL(url)
+      if (u.protocol === 'https:' && EXTERNAL_HOSTS.has(u.hostname)) void shell.openExternal(u.href)
+    } catch { /* not a URL */ }
     return { action: 'deny' }
   })
   win.webContents.on('will-navigate', (e, url) => {
     const devUrl = process.env['ELECTRON_RENDERER_URL']
-    if (!(devUrl && url.startsWith(devUrl))) e.preventDefault()
+    if (!(!app.isPackaged && devUrl && url.startsWith(devUrl))) e.preventDefault()
   })
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devUrl) void win.loadURL(devUrl)
@@ -227,6 +234,21 @@ const handlers: Api = {
     return { settings, hasKey: !!activeKey(), keys, caps: await caps(), modelCaps: modelCaps() }
   },
   async setSettings(patch) {
+    // Requests carry the API key, so a new address is checked here and a non-official host needs the
+    // person's confirmation in a main-process dialog that the page cannot click through.
+    for (const [p, raw] of Object.entries(patch?.ai?.baseUrls ?? {})) {
+      if (!isProvider(p) || typeof raw !== 'string') throw new Error('Unknown provider.')
+      const problem = baseUrlProblem(raw)
+      if (problem) throw new Error(`That base URL ${problem}.`)
+      const host = raw.trim() ? new URL(raw.trim()).host : ''
+      if (!host || host === new URL(DEFAULT_BASE_URLS[p]).host || host === new URL(baseUrlFor(settings.ai, p)).host) continue
+      const ok = await dialog.showMessageBox(win!, {
+        type: 'warning', buttons: ['Use this address', 'Cancel'], defaultId: 1, cancelId: 1,
+        message: `Send your ${providerInfo(p).label} requests and API key to ${host}?`,
+        detail: 'Lesson text and your API key will go to this address instead of the official one. Only continue if you run or trust it.'
+      })
+      if (ok.response !== 0) throw new Error('Base URL not changed.')
+    }
     const before = settings.ai.provider
     settings = mergeSettings(deepMerge(settings, patch))
     saveSettings()
@@ -240,6 +262,7 @@ const handlers: Api = {
   },
   async setKey(key, provider) {
     const p = provider ?? settings.ai.provider
+    if (!isProvider(p)) throw new Error('Unknown provider.')
     const k = key.trim()
     if (!k) return { ok: false, error: 'The key is empty.' }
     if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Keychain encryption is not available on this system, so the key cannot be stored safely.' }
@@ -251,6 +274,7 @@ const handlers: Api = {
   },
   async clearKey(provider) {
     const p = provider ?? settings.ai.provider
+    if (!isProvider(p)) throw new Error('Unknown provider.')
     try { fs.unlinkSync(keyFile(p)) } catch { /* already gone */ }
     cachedKeys[p] = null
     queue.emitStatus()
@@ -262,7 +286,8 @@ const handlers: Api = {
     }
     const m = (model || settings.ai.model).trim()
     const res = await testModel({ provider: settings.ai.provider, baseUrl: baseUrlFor(settings.ai), key, endpoint: settings.ai.endpoint }, m)
-    queue.saveCaps(res.caps)
+    // A failed test only records the error; what was learned about the model before stays.
+    queue.saveCaps(res.ok ? res.caps : { ...queue.caps(m), lastError: res.caps.lastError ?? res.error ?? null, testedAt: res.caps.testedAt ?? Date.now() })
     return res
   },
   async capsCheck() { return await caps() },
@@ -288,6 +313,7 @@ const handlers: Api = {
   async deleteTopics(ids) { store.tx(() => ids.forEach((id) => repo.deleteTopic(id))); emitData() },
   async override(id, action) { repo.override(id, action); emitData() },
   async reviewTopic(id, rating, quiz, minutes, note) { repo.review(id, { rating, quiz, minutes, note, at: Date.now() }); emitData() },
+  async createCourse(name) { const c = repo.createCourse(name); emitData(); return c.id },
   async renameCourse(id, name) { repo.renameCourse(id, name); emitData() },
   async deleteCourse(id) { repo.deleteCourse(id); emitData(); queue.emitStatus() },
   async renameDoc(id, title) { repo.renameDoc(id, title); emitData() },
@@ -304,19 +330,16 @@ const handlers: Api = {
     emitData()
   },
 
-  async pickImport(kind) {
+  async pickPaths(kind) {
     const r = await dialog.showOpenDialog(win!, {
-      title: 'Import lessons',
+      title: kind === 'folder' ? 'Choose a folder of lessons' : 'Choose lesson files',
       properties: kind === 'folder' ? ['openDirectory', 'multiSelections'] : ['openFile', 'multiSelections'],
       filters: kind === 'files' ? [{ name: 'Lessons', extensions: ALL_EXT.map((e) => e.slice(1)) }] : undefined
     })
-    if (r.canceled || !r.filePaths.length) return null
-    const res = await importPaths(repo, r.filePaths)
-    emitData()
-    return res
+    return r.canceled ? [] : r.filePaths
   },
-  async importPaths(paths, confirm) {
-    const res = await importPaths(repo, paths, confirm)
+  async importPaths(paths, confirm, courseId) {
+    const res = await importPaths(repo, paths, confirm, courseId)
     emitData()
     return res
   },
@@ -445,13 +468,18 @@ const handlers: Api = {
     if (data?.app !== 'interleaved-study' || !data.colls) return { ok: false, error: 'This file is not an Interleaved Study backup.' }
     const ok = await dialog.showMessageBox(win!, {
       type: 'warning', buttons: ['Replace all data', 'Cancel'], defaultId: 1, cancelId: 1,
-      message: 'Replace all current data with this backup?', detail: 'Your API key stays as it is. Consider exporting a backup of the current data first.'
+      message: 'Replace all current data with this backup?', detail: 'Your API keys, provider addresses and tool paths stay as they are. Consider exporting a backup of the current data first.'
     })
     if (ok.response !== 0) return null
     // Keep a safety copy of the current data next to the store
     fs.writeFileSync(path.join(app.getPath('userData'), `before-restore-${Date.now()}.json`), JSON.stringify(store.dump()))
+    const keep = { baseUrls: settings.ai.baseUrls, tools: settings.tools }
     store.restore(data)
     settings = mergeSettings(store.kvGet('settings'))
+    // Where the API key is sent and which programs run are this machine's choice, never a backup's.
+    settings.ai.baseUrls = keep.baseUrls
+    settings.tools = keep.tools
+    saveSettings()
     nativeTheme.themeSource = settings.theme
     engine.state = store.kvGet('session') ?? null
     queue.start()
@@ -502,6 +530,7 @@ async function init(): Promise<void> {
   nativeTheme.themeSource = settings.theme
   for (const p of PROVIDERS) cachedKeys[p.id] = readKey(p.id)
   repo = new Repo(store, () => settings)
+  try { repo.nameCoursesByCode() } catch { /* a cosmetic rename must never block startup */ }
   repo.snapshotToday()
   queue = new Queue({
     store,
